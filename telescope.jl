@@ -15,10 +15,13 @@ import Base.^
 
 
 function readcsv(name)
+	# This gets the csv's output by a Newport LBP2-VIS and turns them into a Float64 array
 	return convert(Array{Float64,2},readdlm(name,',')[:,1:end-1])
 end
 
 function gfit(name)
+	# Fits a single image of a Gaussian beam to a Gaussian to extract the width
+	# It actually fits the marginal sums to 1D Gaussians, so it cannot at the moment extract e.g. ellipticity
 	dat = readcsv(name)
 	Z = convert(Array{Float64,2},dat[:,1:end-1])
 	Zx = vec(sum(Z,dims=1))
@@ -32,6 +35,7 @@ function gfit(name)
 end
 
 function diameter(name)
+	# Finds the beam diameter given an image
 	fitx, fity = gfit(name)
 	wx = fitx.param[3]
 	wy = fity.param[3]
@@ -39,6 +43,7 @@ function diameter(name)
 end
 
 function showFit(name)
+	# Plots the image marginals along with fitted function for visual comparison
 	dat = readcsv(name)
 	Z = convert(Array{Float64,2},dat[:,1:end-1])
 	Zx = vec(sum(Z,dims=1))
@@ -54,6 +59,10 @@ function showFit(name)
 end
 
 function getProfiles(dr,name; plt=false)
+	# Gets fit data (beam diameters) for all files in a directory.
+	# Assumes that file names have the format dr*name*"distance"*"cruff"*".csv"
+		# Where all are strings, * is concatenation, and "distance" is an actual distance of the image
+		# from some reference point.  "distance" is extracted and returned as relevant data.
 	n = length(name)
 	files = [i for i in readdir(dr) if (i[1:n]==name) & (i[end-3:end]==".csv")]
 	dist = Array{Float64}(undef,0)
@@ -77,7 +86,7 @@ function getProfiles(dr,name; plt=false)
 end
 
 function findWaist(d::Array,w::Array,lambda)
-	# Converts dist from inches to meters and wx from pixels to meters, and fits them to a Gaussian waist profile
+	# Converts dist from inches to meters and wx from pixels to meters, and fits them to a Gaussian waist profile.
 	println(gEst(d,w))
 	if lambda==679
 		#fit = curve_fit(waist679,d,w,[min(w...) , d[findmin(w)[2]])
@@ -101,6 +110,7 @@ function gEst(d,w)
 end
 
 function findWaist(dr::String,name::String,lambda)
+	# Gets beam data from file, then uses it to find a waist
 	dist,wx,wy,converged = getProfiles(dr,name)
 	paramx = findWaist(dist,wx,lambda)
 	paramy = findWaist(dist,wy,lambda)
