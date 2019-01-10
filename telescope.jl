@@ -6,31 +6,42 @@ using Statistics, Distributions
 using Images, ImageView, FileIO
 using DelimitedFiles
 using LsqFit
+using Optim
 import Base.*
 import Base.^
 
+plotly()
 @. model(x,p) = p[1] * exp(-(x-p[2])^2/p[3]^2)
 @. waist707(x,p) = p[1] * sqrt(1 + (((x-p[2])*707e-9)/(pi*p[1]^2))^2)
 @. waist679(x,p) = p[1] * sqrt(1 + (((x-p[2])*679e-9)/(pi*p[1]^2))^2)
 
 
 function readcsv(name)
-	# This gets the csv's output by a Newport LBP2-VIS and turns them into a Float64 array
+	# This gets the csv's output by a Newport LBP2-VIS beam profiler and turns them into a Float64 array
+		# readdlm is a function from DelimitedFiles that can parse a .csv
+		# The last line in the beam profiler .csv's is an empty string, and gets thrown away
 	return convert(Array{Float64,2},readdlm(name,',')[:,1:end-1])
 end
 
-function gfit(name)
+function gfit(name,plt=false)
 	# Fits a single image of a Gaussian beam to a Gaussian to extract the width
 	# It actually fits the marginal sums to 1D Gaussians, so it cannot at the moment extract e.g. ellipticity
+	# It includes heuristics for ensuring convergence
 	dat = readcsv(name)
-	Z = convert(Array{Float64,2},dat[:,1:end-1])
-	Zx = vec(sum(Z,dims=1))
+	Z = convert(Array{Float64,2},dat)
+	Zx = vec(sum(Z,dims=1))			# Marginal x sum
 	Zy = vec(sum(Z,dims=2))
-	mux = findmax(Zx)[2]
-	muy = findmax(Zy)[2]
-	fitx = curve_fit(model, 1.0:length(Zx), Zx, [500000.0,mux,200.0])
-	fity = curve_fit(model, 1.0:length(Zy), Zy, [500000.0,muy,200.0])
+	Mx = findmax(Zx)					# [maximum value, maximum location] for Zx
+	My = findmax(Zy)
+	sigx = sum(Zx)/(sqrt(pi)*Mx[1])		# Estimate for width
+	sigy = sum(Zy)/(sqrt(pi)*My[1])
+	fitx = curve_fit(model, 1.0:length(Zx), Zx, [Mx[1],Mx[2],sigx])
+	fity = curve_fit(model, 1.0:length(Zy), Zy, [My[1],My[2],sigy])
 	
+	if plt
+		plot([Zx,model(1:length(Zx),fitx.param),Zy,model(1:length(Zy),fity.param)])
+		return [Zx,model(1:length(Zx),fitx.param),Zy,model(1:length(Zy),fity.param)]
+	end
 	return fitx,fity
 end
 
@@ -45,26 +56,31 @@ end
 function showFit(name)
 	# Plots the image marginals along with fitted function for visual comparison
 	dat = readcsv(name)
-	Z = convert(Array{Float64,2},dat[:,1:end-1])
-	Zx = vec(sum(Z,dims=1))
+	Z = convert(Array{Float64,2},dat)
+	Zx = vec(sum(Z,dims=1))			# Marginal x sum
 	Zy = vec(sum(Z,dims=2))
-	mux = findmax(Zx)[2]*4.4e-6
-	muy = findmax(Zy)[2]*4.4e-6
-	fitx = curve_fit(model, 1.0:length(Zx), Zx, [500000.0,mux,200.0])
-	fity = curve_fit(model, 1.0:length(Zy), Zy, [500000.0,muy,200.0])
-
+	Mx = findmax(Zx)					# [maximum value, maximum location] for Zx
+	My = findmax(Zy)
+	sigx = sum(Zx)/(sqrt(pi)*Mx[1])		# Estimate for width
+	sigy = sum(Zy)/(sqrt(pi)*My[1])
+	fitx = curve_fit(model, 1.0:length(Zx), Zx, [Mx[1],Mx[2],sigx])
+	fity = curve_fit(model, 1.0:length(Zy), Zy, [My[1],My[2],sigy])
+	
+	return [Zx,model(1:length(Zx),fitx.param),Zy,model(1:length(Zy),fity.param)]
 	plot([Zx,model(1:length(Zx),fitx.param),Zy,model(1:length(Zy),fity.param)])
 	println(fitx.param)
 	println(fity.param)
 end
 
-function getProfiles(dr,name; plt=false)
+function getProfiles(dr,name; plt=false, lunit=.0254, wunit=4.4e-6)
 	# Gets fit data (beam diameters) for all files in a directory.
 	# Assumes that file names have the format dr*name*"distance"*"cruff"*".csv"
 		# Where all are strings, * is concatenation, and "distance" is an actual distance of the image
 		# from some reference point.  "distance" is extracted and returned as relevant data.
+	# lunit and wunit are unit conversion factors for the distances (lenghts) and widths, respectively.
+		# The default values convert inch distances and pixel widths into meters.
 	n = length(name)
-	files = [i for i in readdir(dr) if (i[1:n]==name) & (i[end-3:end]==".csv")]
+	files = [i for i in readdir(dr) if (i[1:n]==name) & (i[end-3:end]==".csv")]	# Get all csv's in directory
 	dist = Array{Float64}(undef,0)
 	wx = Array{Float64}(undef,0)
 	wy = Array{Float64}(undef,0)
@@ -79,9 +95,9 @@ function getProfiles(dr,name; plt=false)
 	end
 	
 	p = sortperm(dist)
-	d = [i*.0254 for i in dist][p]
-	WX = [i*4.4e-6 for i in wx][p]
-	WY = [i*4.4e-6 for i in wy][p]
+	d = [i*lunit for i in dist][p]
+	WX = [i*wunit for i in wx][p]
+	WY = [i*wunit for i in wy][p]
 	return d,WX,WY,converged[p]
 end
 
@@ -123,15 +139,18 @@ end
 
 #----------- Ray tracing ------------------------
 
+# The structure of this ray tracing business is organized by lenses and systems.  
+# A system is a collection of lenses and a single beam
+
 mutable struct Lens
 	f::Number
 	z::Number
 end
 
 mutable struct Syst
-	zRef::Number
-	z0::Number
-	w0::Number
+	zRef::Number	# Location from which to start propagating the beam
+	z0::Number	# Beam waist location wrt to zRef in absence of any lenses
+	w0::Number	
 	lambda::Number
 	lenses::Array{Lens,1}
 	qRef::Complex
@@ -157,7 +176,7 @@ function *(s::Syst,l::Lens)
 	sort!(s)
 end
 
-function (s::Syst)(z)
+function (s::Syst)(z::Number)
 	L = [i for i in s.lenses if between(i.z,z,s.zRef)]
 	if isempty(L)
 		return s.qRef + z-s.zRef
@@ -184,11 +203,51 @@ function between(a,b,c)
 	return (a<b)&(c<a)|(a<c)&(b<a)
 end
 
+function (s::Syst)(z::Array)
+	return [s(i) for i in z]
+end
+
 function ^(s::Syst,z::Number)
+	# Computes the beam waist at any location z.
 	q = s(z)
 	x = real(q)
 	zR = imag(q)
 	return sqrt((1+(x/zR)^2)*zR*s.lambda/pi)
+end
+
+function ^(s::Syst,z::Array)
+	return [s^i for i in z]
+end
+
+function overlap(q1,q2)
+	# Computes the overlap integral for two beams with q parameters q1 and q2
+	zR1 = imag(q1)
+	zR2 = imag(q2)
+	return 2*sqrt(zR1*zR2)/abs(q1-conj(q2))
+end
+
+function zapLens!(s::Syst,zTarget,qTarget,lenses::Array{Lens,1},lb,ub)
+	# Optimizes the z locations of the lenses in "lenses" and adds them to System s.
+	# The optimization criterion is mode matching to qTarget at location zTarget
+	N = length(lenses)
+	for l in lenses
+		s*l
+	end
+	initial = [l.z for l in lenses]
+	function objective!(x)
+		if length(x)!=N
+			error("Input must have length $N.  It has length $(length(x)) instead.")
+		end
+		for i in 1:N
+			lenses[i].z = x[i]
+		end
+		sort!(s)
+		return -overlap(s(zTarget),qTarget)
+	end
+	inner_optimizer = GradientDescent()
+	results = optimize(objective!,lb,ub,initial, Fminbox(inner_optimizer))
+	#results = optimize(objective!,initial)
+	return results
 end
 
 end
