@@ -1,4 +1,13 @@
 # telescope.jl
+# Typical usage: 
+	# You have a bunch of .csv files from a beam profiler in a directory called "C:\\example\\directory".
+	# The csv files have names like "679data-2_0001.ascii.csv".
+	# You make this call:
+		# > Sx,Sy = makeSyst("C:\\example\\directory","679data-",679)
+	# Then you make an array of lenses in the approximate position you want them:
+		# > lenses = [Lens(.3,.5), Lens(.2,.7)]
+	# Then you incorporate them into your optical system with appropriate modematching condition:
+		# > zapLens!(Sx,zTarget,qTarget,lenses,lb,ub)
 
 module telescope
 using Plots
@@ -103,14 +112,10 @@ end
 
 function findWaist(d::Array,w::Array,lambda)
 	# Converts dist from inches to meters and wx from pixels to meters, and fits them to a Gaussian waist profile.
-	println(gEst(d,w))
-	if lambda==679
-		#fit = curve_fit(waist679,d,w,[min(w...) , d[findmin(w)[2]])
-		fit = curve_fit(waist679,d,w,gEst(d,w))
-	elseif lambda==707
-		fit = curve_fit(waist707,d,w,gEst(d,w))
-	end
+	println("Estimated waist parameters: $(gEst(d,w))")
 	
+	@. waist(x,p) = p[1] * sqrt(1 + (((x-p[2])*lambda)/(pi*p[1]^2))^2)
+	fit = curve_fit(waist,d,w,gEst(d,w))
 	if fit.converged==false
 		println("WARNING: Fit failed to converge.")
 	end
@@ -130,11 +135,17 @@ function findWaist(dr::String,name::String,lambda)
 	dist,wx,wy,converged = getProfiles(dr,name)
 	paramx = findWaist(dist,wx,lambda)
 	paramy = findWaist(dist,wy,lambda)
-	
-	lambda==679 ? M = waist679 : M = waist707
-	plot(dist,[wx,M(dist,paramx),wy,M(dist,paramy)])
-	
 	return paramx,paramy,dist,wx,wy,converged,M
+end
+
+function makeSyst(dr::String,name::String,lambda)
+	dat = findWaist(dr::String,name::String,lambda)
+	wx = dat[1][1]
+	zx = dat[1][2]
+	wy = dat[2][1]
+	zy = dat[2][2]
+	
+	return Syst(zx,zx,wx,lambda), Syst(zy,zy,wy,lambda)
 end
 
 #----------- Ray tracing ------------------------
@@ -174,6 +185,10 @@ end
 function *(s::Syst,l::Lens)
 	push!(s.lenses,l)
 	sort!(s)
+end
+
+function clear!(s::Syst)
+	s.lenses = Array{Lens}(undef,0)
 end
 
 function (s::Syst)(z::Number)
@@ -247,6 +262,10 @@ function zapLens!(s::Syst,zTarget,qTarget,lenses::Array{Lens,1},lb,ub)
 	inner_optimizer = GradientDescent()
 	results = optimize(objective!,lb,ub,initial, Fminbox(inner_optimizer))
 	#results = optimize(objective!,initial)
+	for i in 1:N
+		lenses[i].z = results.minimizer[i]
+	end
+	sort!(s)
 	return results
 end
 
